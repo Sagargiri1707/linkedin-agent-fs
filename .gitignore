@@ -1,1 +1,24 @@
 backend/.env
+frontend/.env
+frontend/node_modules
+frontend/dist
+frontend/build
+frontend/coverage
+frontend/test
+frontend/test-results
+frontend/test-results
+
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+frotnend/node_modules
+frotnend/.pnp
+frotnend/.pnp.js
+frotnend/.DS_Store
+frotnend/.env.local
+frotnend/.env.development.local
+frotnend/.env.test.local
+frotnend/.env.production.local
+frotnend/npm-debug.log*
+frotnend/yarn-debug.log*
+frotnend/yarn-error.log*
