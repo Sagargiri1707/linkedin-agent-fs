@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]  # Includes gunicorn, uvloop, httptools for performance
+pydantic
+pydantic-settings
+motor  # Async MongoDB driver
+apscheduler
+httpx  # For making HTTP requests to external APIs
+twilio  # For WhatsApp integration
+python-dotenv
+python-jose[cryptography]  # For JWTs if you add user auth later
+passlib[bcrypt]  # For password hashing if you add user auth later
+Jinja2  # If you decide to add simple HTML pages later
+requests  # Often a good fallback or for sync operations if needed
+bson 
