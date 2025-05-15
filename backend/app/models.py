@@ -1,26 +1,51 @@
-from pydantic import BaseModel, Field, HttpUrl
+# app/models.py
+# Defines Pydantic models for data validation, serialization, and database interaction.
+
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 from typing import Optional, List, Dict, Any
 from enum import Enum
 import datetime
-from bson import ObjectId # For MongoDB _id field if not using Beanie
+from bson import ObjectId # For MongoDB _id field
 
-# Helper for MongoDB ObjectId compatibility with Pydantic
+# Helper for MongoDB ObjectId compatibility with Pydantic v2
 class PyObjectId(ObjectId):
     @classmethod
     def __get_validators__(cls):
         yield cls.validate
 
     @classmethod
-    def validate(cls, v, field): # Changed from (cls, v) to (cls, v, field) for Pydantic v2
-        if not ObjectId.is_valid(v):
-            raise ValueError("Invalid ObjectId")
-        return ObjectId(v)
+    def validate(cls, v, field_info): # field_info is part of Pydantic v2 validator signature
+        if isinstance(v, ObjectId):
+            return v
+        if ObjectId.is_valid(v):
+            return ObjectId(v)
+        raise ValueError(f"Invalid ObjectId: {v}")
 
     @classmethod
-    def __get_pydantic_json_schema__(cls, field_schema): # Changed for Pydantic v2
-        field_schema.update(type="string")
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        # Pydantic v2 uses a handler to get the schema of the wrapped type
+        json_schema = handler(core_schema)
+        json_schema.update(
+            type="string",
+            example="507f1f77bcf86cd799439011", # Example ObjectId string
+            description="MongoDB ObjectId"
+        )
+        return json_schema
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type, handler):
+        # For Pydantic v2, this defines how the type is handled internally
+        from pydantic_core import core_schema
+        return core_schema.json_or_python_schema(
+            python_schema=core_schema.with_info_plain_validator_function(cls.validate),
+            json_schema=core_schema.str_schema(),
+            serialization=core_schema.plain_serializer_function_ser_schema(lambda x: str(x)),
+        )
 
 class PostStatus(str, Enum):
+    """
+    Enum for the status of a LinkedIn post draft.
+    """
     DRAFT = "draft"
     PENDING_APPROVAL = "pending_approval"
     APPROVED = "approved"
@@ -30,60 +55,99 @@ class PostStatus(str, Enum):
     ERROR = "error"
 
 class Trend(BaseModel):
-    id: Optional[PyObjectId] = Field(alias="_id", default=None)
-    topic: str
-    source: str # e.g., "perplexity_api", "rss_feed_tech_crunch"
-    relevance_score: Optional[float] = None
-    summary: Optional[str] = None
-    raw_data: Optional[Dict[str, Any]] = None # Store original data from source
-    identified_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
-    last_processed_at: Optional[datetime.datetime] = None
+    """
+    Model for a trending topic identified by the agent.
+    """
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    topic: str = Field(..., description="The main topic of the trend.")
+    source: str = Field(..., description="Source of the trend (e.g., 'perplexity_api', 'rss_feed_tech_crunch').")
+    relevance_score: Optional[float] = Field(default=None, description="A score indicating the trend's relevance.")
+    summary: Optional[str] = Field(default=None, description="A brief summary of the trend.")
+    raw_data: Optional[Dict[str, Any]] = Field(default=None, description="Original data from the source API.")
+    identified_at: datetime.datetime = Field(default_factory=datetime.datetime.now, description="Timestamp when the trend was identified.")
+    last_processed_at: Optional[datetime.datetime] = Field(default=None, description="Timestamp when this trend was last used for content generation.")
 
     class Config:
-        populate_by_name = True # was allow_population_by_field_name = True
-        json_encoders = {ObjectId: str} # For serialization
-        arbitrary_types_allowed = True # To allow PyObjectId
+        populate_by_name = True # Allows using alias "_id" also as "id"
+        json_encoders = {
+            ObjectId: str, # Ensures ObjectId is serialized to string
+            datetime.datetime: lambda dt: dt.isoformat() # Standard ISO format for datetime
+        }
+        arbitrary_types_allowed = True # Necessary for PyObjectId
 
 class PostDraft(BaseModel):
-    id: Optional[PyObjectId] = Field(alias="_id", default=None)
-    trend_id: Optional[PyObjectId] = None # Link to the Trend model
-    headline_suggestion: Optional[str] = None
-    generated_text: str
-    image_prompt: Optional[str] = None
-    generated_image_url: Optional[HttpUrl] = None
-    ideogram_job_id: Optional[str] = None # If Ideogram provides one
-    status: PostStatus = PostStatus.DRAFT
-    voice_profile_used: Optional[str] = "default" # Or link to a voice profile ID
+    """
+    Model for a LinkedIn post draft generated by the agent.
+    """
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    trend_id: Optional[PyObjectId] = Field(default=None, description="Link to the Trend model that inspired this draft.")
+    headline_suggestion: Optional[str] = Field(default=None, description="Suggested headline for the post.")
+    generated_text: str = Field(..., description="The main text content of the post generated by AI.")
+    image_prompt: Optional[str] = Field(default=None, description="Prompt used for generating the image.")
+    generated_image_url: Optional[HttpUrl] = Field(default=None, description="URL of the AI-generated image.")
+    ideogram_job_id: Optional[str] = Field(default=None, description="Job ID from Ideogram if image generation is asynchronous.")
+    status: PostStatus = Field(default=PostStatus.DRAFT, description="Current status of the post draft.")
+    voice_profile_used: Optional[str] = Field(default="default", description="Identifier for the voice profile used (e.g., 'default', 'user_voice_1').")
     created_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
     updated_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
-    scheduled_publish_time: Optional[datetime.datetime] = None
-    linkedin_post_id: Optional[str] = None # After publishing
-    error_message: Optional[str] = None
-    approval_message_sid: Optional[str] = None # Twilio SID for the approval request message
+    scheduled_publish_time: Optional[datetime.datetime] = Field(default=None, description="If scheduled, the time it's set to be published.")
+    linkedin_post_id: Optional[str] = Field(default=None, description="URN of the post on LinkedIn after successful publishing.")
+    linkedin_author_urn: Optional[str] = Field(default=None, description="URN of the LinkedIn user/organization that authored the post.")
+    error_message: Optional[str] = Field(default=None, description="Stores any error message if processing or publishing failed.")
+    approval_message_sid: Optional[str] = Field(default=None, description="Twilio SID for the WhatsApp approval request message.")
+    engagement_stats: Optional[Dict[str, Any]] = Field(default=None, description="Stores engagement stats like likes, comments after publishing.")
+    engagement_last_checked: Optional[datetime.datetime] = Field(default=None, description="Timestamp when engagement was last checked.")
+
+
+    @field_validator('generated_image_url', mode='before')
+    @classmethod
+    def ensure_string_for_httpurl(cls, value):
+        if isinstance(value, HttpUrl):
+            return str(value)
+        return value
 
     class Config:
         populate_by_name = True
-        json_encoders = {ObjectId: str, HttpUrl: lambda v: str(v) if v else None}
+        json_encoders = {
+            ObjectId: str,
+            HttpUrl: lambda v: str(v) if v else None, # Serialize HttpUrl to string
+            datetime.datetime: lambda dt: dt.isoformat()
+        }
         arbitrary_types_allowed = True
 
-class WhatsAppMessage(BaseModel): # For parsing incoming Twilio webhook (simplified)
-    From: str # User's WhatsApp number e.g. "whatsapp:+1234567890"
-    To: str   # Your Twilio WhatsApp number
-    Body: str # Message content or button payload
-    MessageSid: str
+class WhatsAppMessage(BaseModel):
+    """
+    Simplified model for parsing incoming Twilio WhatsApp webhook data.
+    Twilio sends more fields, but these are common ones.
+    """
+    From: str = Field(..., description="Sender's WhatsApp number (e.g., 'whatsapp:+1234567890').")
+    To: str = Field(..., description="Your Twilio WhatsApp number.")
+    Body: str = Field(..., description="The text content of the message or button payload.")
+    MessageSid: str = Field(..., description="Unique identifier for the Twilio message.")
+    # You might add more fields like ProfileName, MediaUrl0, etc., as needed.
 
 class LinkedInToken(BaseModel):
-    id: Optional[PyObjectId] = Field(alias="_id", default=None)
-    user_id: str # Your internal user identifier
-    access_token: str
-    refresh_token: Optional[str] = None
-    expires_at: datetime.datetime # Calculated from expires_in
-    refresh_token_expires_at: Optional[datetime.datetime] = None # If applicable
-    user_urn: Optional[str] = None # LinkedIn Person URN (needed for posting)
+    """
+    Model for storing LinkedIn OAuth 2.0 tokens.
+    """
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    user_id: str = Field(..., description="Internal user identifier (e.g., 'default_personal_user').")
+    user_urn: str = Field(..., description="LinkedIn User URN (e.g., 'urn:li:person:xxxxxx'). Essential for API calls.")
+    access_token: str = Field(..., description="The LinkedIn access token.")
+    refresh_token: Optional[str] = Field(default=None, description="The LinkedIn refresh token, if provided.")
+    expires_at: datetime.datetime = Field(..., description="Timestamp when the access token expires.")
+    refresh_token_expires_at: Optional[datetime.datetime] = Field(default=None, description="Timestamp when the refresh token expires, if applicable.")
     created_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
     updated_at: datetime.datetime = Field(default_factory=datetime.datetime.now)
 
     class Config:
         populate_by_name = True
-        json_encoders = {ObjectId: str}
-        arbitrary_types_allowed = True 
+        json_encoders = {
+            ObjectId: str,
+            datetime.datetime: lambda dt: dt.isoformat()
+        }
+        arbitrary_types_allowed = True
+
+# Example of how you might use these models:
+# trend_example = Trend(topic="AI in Education", source="manual", relevance_score=0.9)
+# draft_example = PostDraft(generated_text="AI is revolutionizing education by...", trend_id=trend_example.id)
